@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.Remoting.Contexts;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
@@ -95,6 +96,14 @@ namespace PostProcessingEffectsV3
         };
 
         private string[] fogModes2 = new string[3] { "Linear", "Exponential", "ExponentialSquared" };
+
+        private EyeAdaptation[] adaptionModes = new EyeAdaptation[2]
+        {
+            EyeAdaptation.Progressive,
+            EyeAdaptation.Fixed
+        };
+
+        private string[] adaptionModes2 = new string[2] { "Progressive", "Fixed" };
         #endregion
 
         #region Post Process Effects Variables
@@ -129,6 +138,7 @@ namespace PostProcessingEffectsV3
         private ChromaticAberration CA;
         private GlobalFog globalFog;
         private Grain grain;
+        private AutoExposure autoExposure;
         #endregion
 
         #region Setup
@@ -438,6 +448,14 @@ namespace PostProcessingEffectsV3
                 {
                     postProcessVolume.profile.TryGetSettings<Grain>(out grain);
                 }
+                if (!postProcessVolume.profile.HasSettings<AutoExposure>())
+                {
+                    autoExposure = postProcessVolume.profile.AddSettings<AutoExposure>();
+                }
+                else
+                {
+                    postProcessVolume.profile.TryGetSettings<AutoExposure>(out autoExposure);
+                }
                 lensDistortion = ScriptableObject.CreateInstance<LensDistortion>();
                 lensDistortion = (LensDistortion)postProcessVolume.profile.AddSettings(lensDistortion);
 
@@ -602,6 +620,19 @@ namespace PostProcessingEffectsV3
                 grain.size.Override(GrainSize.Value);
                 grain.lumContrib.Override(GrainLumContrib.Value);
 
+                if ((bool)postProcessResources.computeShaders.autoExposure && (bool)postProcessResources.computeShaders.exposureHistogram)
+                {
+                    Logger.LogInfo("IS SUPPORTED");
+                    autoExposure.enabled.Override(AutoExposureEnable.Value);
+                    autoExposure.filtering.Override(AutoExposureFiltering.Value);
+                    autoExposure.minLuminance.Override(AutoExposureMinimum.Value);
+                    autoExposure.maxLuminance.Override(AutoExposureMaximum.Value);
+                    autoExposure.keyValue.Override(AutoExposureCompensation.Value);
+                    autoExposure.eyeAdaptation.Override(AutoExposureAdaption.Value);
+                    autoExposure.speedUp.Override(AutoExposureSpeedUp.Value);
+                    autoExposure.speedDown.Override(AutoExposureSpeedDown.Value);
+                }
+
                 CA.enabled.Override(CAenable.Value);
                 CA.intensity.Override(CAintensity.Value);
                 sAOPro.enabled = nAOenable;
@@ -677,6 +708,7 @@ namespace PostProcessingEffectsV3
         private bool distortion = false;
         private bool fog = false;
         private bool grainShown = false;
+        private bool exposureShown = false;
 
         #region Buffers
         private string DistortionIntensityBuffer;
@@ -749,6 +781,13 @@ namespace PostProcessingEffectsV3
         private string GrainIntensityBuffer;
         private string GrainSizeBuffer;
         private string GrainLumContribBuffer;
+        private string AutoExposureFilteringXBuffer;
+        private string AutoExposureFilteringYBuffer;
+        private string AutoExposureMinimumBuffer;
+        private string AutoExposureMaximumBuffer;
+        private string AutoExposureCompensationBuffer;
+        private string AutoExposureSpeedUpBuffer;
+        private string AutoExposureSpeedDownBuffer;
 
         private void UpdateBuffers()
         {
@@ -822,6 +861,13 @@ namespace PostProcessingEffectsV3
             GrainIntensityBuffer = GrainIntensity.Value.ToString();
             GrainSizeBuffer = GrainSize.Value.ToString();
             GrainLumContribBuffer = GrainLumContrib.Value.ToString();
+            AutoExposureFilteringXBuffer = AutoExposureFiltering.Value.x.ToString();
+            AutoExposureFilteringYBuffer = AutoExposureFiltering.Value.y.ToString();
+            AutoExposureMinimumBuffer = AutoExposureMinimum.Value.ToString();
+            AutoExposureMaximumBuffer = AutoExposureMaximum.Value.ToString();
+            AutoExposureCompensationBuffer = AutoExposureCompensation.Value.ToString();
+            AutoExposureSpeedUpBuffer = AutoExposureSpeedUp.Value.ToString();
+            AutoExposureSpeedDownBuffer = AutoExposureSpeedDown.Value.ToString();
         }
         #endregion
 
@@ -1517,6 +1563,53 @@ namespace PostProcessingEffectsV3
             }
             #endregion
 
+            #region Auto Exposure
+            exposureShown = GUILayout.Toggle(exposureShown, "Auto Exposure", GUI.skin.button);
+            if (exposureShown)
+            {
+                GUILayout.BeginVertical();
+                AutoExposureEnable.Value = GUILayout.Toggle(AutoExposureEnable.Value, "Enable");
+
+                GUILayout.Label("Filtering", GUILayout.Width(120f));
+                float x = DrawSliderTextBoxCombo(
+                    "Lower bound: ", 1f, 99f, ref AutoExposureFilteringXBuffer, AutoExposureFiltering.Value.x, 50f
+                );
+                float y = DrawSliderTextBoxCombo(
+                    "Upper bound: ", 1f, 99f, ref AutoExposureFilteringYBuffer, AutoExposureFiltering.Value.y, 95f
+                );
+                AutoExposureFiltering.Value = new Vector2(x, y);
+
+                AutoExposureMinimum.Value = DrawSliderTextBoxCombo(
+                    "Minimum", -9f, 9f, ref AutoExposureMinimumBuffer, AutoExposureMinimum.Value, (float)AutoExposureMinimum.DefaultValue
+                );
+                AutoExposureMaximum.Value = DrawSliderTextBoxCombo(
+                    "Maximum", -9f, 9f, ref AutoExposureMaximumBuffer, AutoExposureMaximum.Value, (float)AutoExposureMaximum.DefaultValue
+                );
+                AutoExposureCompensation.Value = DrawSliderTextBoxCombo(
+                    "Compensation", 0f, 100f, ref AutoExposureCompensationBuffer, AutoExposureCompensation.Value, (float)AutoExposureCompensation.DefaultValue
+                );
+
+                int selectAdaptionType = Array.IndexOf(adaptionModes, AutoExposureAdaption.Value);
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Adaption Type", GUILayout.Width(120f));
+                selectAdaptionType = GUILayout.SelectionGrid(selectAdaptionType, adaptionModes2, 3, GUI.skin.toggle);
+                AutoExposureAdaption.Value = adaptionModes[selectAdaptionType];
+                if (GUILayout.Button("Reset", GUILayout.Width(60f)))
+                {
+                    AutoExposureAdaption.Value = (EyeAdaptation)AutoExposureAdaption.DefaultValue;
+                }
+                GUILayout.EndHorizontal();
+
+                AutoExposureSpeedUp.Value = DrawSliderTextBoxCombo(
+                    "Speed Up", 0f, 100f, ref AutoExposureSpeedUpBuffer, AutoExposureSpeedUp.Value, (float)AutoExposureSpeedUp.DefaultValue
+                );
+                AutoExposureSpeedDown.Value = DrawSliderTextBoxCombo(
+                    "Speed Down", 0f, 100f, ref AutoExposureSpeedDownBuffer, AutoExposureSpeedDown.Value, (float)AutoExposureSpeedDown.DefaultValue
+                );
+                GUILayout.EndVertical();
+            }
+            #endregion
+
             GUI.DragWindow();
         }
 
@@ -1715,7 +1808,6 @@ namespace PostProcessingEffectsV3
         private ConfigEntry<float> FogHeight { get; set; }
         private ConfigEntry<Color> FogColor { get; set; }
 
-
         #endregion
 
         #region Grain
@@ -1725,6 +1817,19 @@ namespace PostProcessingEffectsV3
         private ConfigEntry<float> GrainIntensity { get; set; }
         private ConfigEntry<float> GrainSize { get; set; }
         private ConfigEntry<float> GrainLumContrib { get; set; }
+
+        #endregion
+
+        #region AutoExposure
+
+        private ConfigEntry<bool> AutoExposureEnable { get; set; }
+        private ConfigEntry<Vector2> AutoExposureFiltering { get; set; }
+        private ConfigEntry<float> AutoExposureMinimum { get; set; }
+        private ConfigEntry<float> AutoExposureMaximum { get; set; }
+        private ConfigEntry<float> AutoExposureCompensation { get; set; }
+        private ConfigEntry<EyeAdaptation> AutoExposureAdaption { get; set; }
+        private ConfigEntry<float> AutoExposureSpeedUp { get; set; }
+        private ConfigEntry<float> AutoExposureSpeedDown { get; set; }
 
         #endregion
         #endregion
@@ -1853,6 +1958,14 @@ namespace PostProcessingEffectsV3
             GrainIntensity = base.Config.Bind("Grain", "Intensity", 0f, new ConfigDescription("", new AcceptableValueRange<float>(0f, 1f)));
             GrainSize = base.Config.Bind("Grain", "Size", 1f, new ConfigDescription("", new AcceptableValueRange<float>(0.3f, 3f)));
             GrainLumContrib = base.Config.Bind("Grain", "Luminance Contribution", 0.8f, new ConfigDescription("", new AcceptableValueRange<float>(0f, 1f)));
+            AutoExposureEnable = base.Config.Bind("Auto Exposure", "_Enable", false, "");
+            AutoExposureFiltering = base.Config.Bind("Auto Exposure", "Filtering", new Vector2(50f, 95f), "");
+            AutoExposureMinimum = base.Config.Bind("Auto Exposure", "Minimum Luminance", 0f, new ConfigDescription("", new AcceptableValueRange<float>(-9f, 9f)));
+            AutoExposureMaximum = base.Config.Bind("Auto Exposure", "Maximum Luminance", 0f, new ConfigDescription("", new AcceptableValueRange<float>(-9f, 9f)));
+            AutoExposureCompensation = base.Config.Bind("Auto Exposure", "Exposure Compensation", 1f, new ConfigDescription("", new AcceptableValueRange<float>(0f, 100f)));
+            AutoExposureAdaption = base.Config.Bind("Auto Exposure", "Adaption Type", EyeAdaptation.Progressive);
+            AutoExposureSpeedUp = base.Config.Bind("Auto Exposure", "Adaption Speed Up", 2f, new ConfigDescription("", new AcceptableValueRange<float>(0f, 100f)));
+            AutoExposureSpeedDown = base.Config.Bind("Auto Exposure", "Adaption Speed Down", 2f, new ConfigDescription("", new AcceptableValueRange<float>(0f, 100f)));
             UpdateBuffers();
         }
         #endregion
